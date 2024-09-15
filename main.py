@@ -116,7 +116,7 @@ def visualize_poses(poses):
     chained_poses = chain_poses(poses)
     
     plotter = pv.Plotter()
-    plotter.set_background('white')
+    plotter.set_background('black')
     
     # Calculate scene size and frame scale
     scene_size = calculate_scene_size(chained_poses)
@@ -140,15 +140,15 @@ def visualize_poses(poses):
         plotter.add_mesh(pv.Line(T[:3, 3], T[:3, 3] + T[:3, 2] * frame_scale), color='blue', line_width=3)
         
         # Add text label
-        label_color = 'purple' if invert else 'black'
+        label_color = 'purple' if invert else 'white'
         plotter.add_point_labels(T[:3, 3].reshape(1, -1), [f'Pose {i+1}{"*" if invert else ""}'], 
-                                 point_size=20, font_size=30, text_color=label_color)
+                                 point_size=0, shape_opacity=0, font_size=30, text_color=label_color)
         
         # Connect poses with lines
         if i > 0:
             prev_T = chained_poses[i-1][0]
             line = pv.Line(prev_T[:3, 3], T[:3, 3])
-            plotter.add_mesh(line, color='black', line_width=2)
+            plotter.add_mesh(line, color='white', line_width=2)
         
         # Extract and print pose parameters
         x, y, z, a, b, c = extract_pose_parameters(T)
