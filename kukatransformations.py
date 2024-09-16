@@ -179,4 +179,4 @@ kuka_poses = [
         , True),
 ]
 
-visualize_poses(kuka_poses)
+#visualize_poses(kuka_poses)
