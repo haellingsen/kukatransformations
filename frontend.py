@@ -1,15 +1,17 @@
 import sys
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QPushButton, QLineEdit, QListWidget, QCheckBox, QLabel, QListWidgetItem
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QDragEnterEvent, QDropEvent
-import numpy as np
+from PyQt5.QtCore import QItemSelection, Qt, QTimer
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, 
+                             QHBoxLayout, QWidget, QPushButton, 
+                             QLineEdit, QListWidget, QCheckBox, QLabel, 
+                             QListWidgetItem, QInputDialog, QDialog,
+                             QMessageBox, QApplication)
+from PyQt5.QtGui import QDropEvent, QCursor
 import pyvista as pv
 from pyvistaqt import QtInteractor
 
 # Import functions from kukatransformations.py
 from kukatransformations import (
-    parse_pose_string, create_transformation_matrix, extract_pose_parameters,
-    invert_transformation, chain_poses, calculate_extents,
+    parse_pose_string, extract_pose_parameters, chain_poses, calculate_extents,
     calculate_camera_position, create_coordinate_frame, calculate_scene_size
 )
 
@@ -34,6 +36,10 @@ class DraggableListWidget(QListWidget):
             print("Main window not set")  # Debug print
         print("Drag and drop occurred, updating poses list")
 
+    def selectionChanged(self, selected: QItemSelection, deselected: QItemSelection) -> None:
+        ## debug print currently selected item
+        return super().selectionChanged(selected, deselected)
+
 class KUKAPoseVisualizer(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -45,12 +51,15 @@ class KUKAPoseVisualizer(QMainWindow):
             ((101.00, -0.00, 2200.00, 90.00, -10.00, -90.00), False),
             ((3000.00, -0.00,  451.5, 0.00, 90.00, 0.00), False)
         ]
+        self.last_scene_size = None
         self.initUI()
+        
 
     def initUI(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
+
 
         # Left panel for input and pose list
         left_panel = QWidget()
@@ -74,13 +83,18 @@ class KUKAPoseVisualizer(QMainWindow):
         # List of poses
         self.pose_list = DraggableListWidget()
         self.pose_list.set_main_window(self)
-        self.pose_list.itemDoubleClicked.connect(self.toggle_invert_pose)
+        self.pose_list.itemDoubleClicked.connect(self.edit_pose)
         left_layout.addWidget(self.pose_list)
 
         # Button to remove selected pose
         remove_button = QPushButton("Remove Selected Pose")
         remove_button.clicked.connect(self.remove_pose)
         left_layout.addWidget(remove_button)
+
+        # Button to invert selected pose
+        self.invert_button = QPushButton("Invert Pose")
+        self.invert_button.clicked.connect(lambda: self.toggle_invert_pose())
+        left_layout.addWidget(self.invert_button)
 
         # Button to visualize poses
         visualize_button = QPushButton("Visualize Poses")
@@ -89,14 +103,14 @@ class KUKAPoseVisualizer(QMainWindow):
 
         # Add resulting pose display
         self.result_label = QLabel("Resulting Pose: ")
+        self.result_label.mousePressEvent = self.copy_result_to_clipboard  # Add click event
         left_layout.addWidget(self.result_label)
-
         main_layout.addWidget(left_panel)
 
         # Right panel for visualization
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
-        
+
         self.plotter = QtInteractor(self)
         right_layout.addWidget(self.plotter.interactor)
 
@@ -113,35 +127,98 @@ class KUKAPoseVisualizer(QMainWindow):
             self.pose_input.clear()
             self.invert_checkbox.setChecked(False)
         except ValueError as e:
-            print(f"Error: {e}")
+            print(f"ValueError: {e}")
 
     def remove_pose(self):
         current_row = self.pose_list.currentRow()
         if current_row >= 0:
             del self.poses[current_row]
             self.update_pose_list()
-    
-    def toggle_invert_pose(self, item):
-        row = self.pose_list.row(item)
-        pose, inverted = self.poses[row]
-        self.poses[row] = (pose, not inverted)
-        self.update_pose_list()
-        # Restore the selection after updating the list
-        self.pose_list.setCurrentRow(row)
 
-    def update_poses_from_list(self):
-        new_poses = []
-        for i in range(self.pose_list.count()):
-            item = self.pose_list.item(i)
-            text = item.text()
-            print(text)
-            pose_str, _ , inverted_str = text.partition('}')
-            pose = parse_pose_string(pose_str+_)
-            print(pose)
-            inverted = '(Inverted)' in inverted_str
-            new_poses.append((pose, inverted))
+    def edit_pose(self, item):
+        current_text = item.text()
+        current_row = self.pose_list.row(item)
+        
+        # Create a custom dialog
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("Edit Pose")
+        dialog.setLabelText("Enter new pose:")
+        dialog.setTextValue(current_text)
+        dialog.setInputMode(QInputDialog.TextInput)
+        
+        # Set the size of the dialog
+        dialog.resize(1000, dialog.height())
+        
+        # Set the minimum width of the text field
+        text_field = dialog.findChild(QLineEdit)
+        if text_field:
+            text_field.setMinimumWidth(900)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            new_text = dialog.textValue()
+            if new_text:
+                try:
+                    # Attempt to parse the new pose string
+                    pose_str, _, inverted_str = new_text.partition('}')
+                    new_pose = parse_pose_string(pose_str + _)
+                    inverted = '(Inverted)' in inverted_str
+                    
+                    # If parsing succeeds, update the pose in self.poses
+                    self.poses[current_row] = (new_pose, inverted)
+                    
+                    # Update the item text
+                    item.setText(new_text)
+                    
+                    # Update the visualization
+                    self.update_poses_from_list(False)
+                    
+                except ValueError as e:
+                    print(f"Invalid pose format: {e}")
+                    # Show an error message to the user
+                    QMessageBox.warning(self, "Invalid Pose", f"The entered pose is invalid: {e}")
+                except Exception as e:
+                    print(f"Unexpected error: {e}")
+                    QMessageBox.warning(self, "Error", f"An unexpected error occurred: {e}")
+
+    def copy_result_to_clipboard(self, event):
+        if event.button() == Qt.LeftButton:
+            clipboard = QApplication.clipboard()
+            text = self.result_label.text().split(": ", 1)[-1]  # Get only the pose part
+            clipboard.setText(text)
+            self.show_copied_message()
+
+    def show_copied_message(self):
+        original_text = self.result_label.text()
+        self.result_label.setText("Copied to clipboard!")
+        QApplication.processEvents()  # Force update of the UI
+        QTimer.singleShot(1500, lambda: self.result_label.setText(original_text))
+
+    def toggle_invert_pose(self):
+        selected_rows = self.pose_list.selectionModel().selectedRows()
+        if selected_rows:
+            row = selected_rows[0].row()
+            pose, inverted = self.poses[row]
+            self.poses[row] = (pose, not inverted)
+            self.update_pose_list()
+            # Restore the selection after updating the list
+            self.pose_list.setCurrentRow(row)
+
+    def update_poses_from_list(self, _update_zoom=True):
+        try:
+            new_poses = []
+            for i in range(self.pose_list.count()):
+                item = self.pose_list.item(i)
+                text = item.text()
+                pose_str, _ , inverted_str = text.partition('}')
+                pose = parse_pose_string(pose_str+_)
+                inverted = '(Inverted)' in inverted_str
+                new_poses.append((pose, inverted))
+        except Exception as e:
+            print(f"Error updating poses from list: {e}")
+            raise Exception(e)
+            return
         self.poses = new_poses
-        self.visualize_poses()
+        self.visualize_poses(update_zoom=_update_zoom)
         print("Updated poses order:", [f"Pose {i+1}" for i in range(len(self.poses))])  # Debug print
 
     def update_pose_list(self):
@@ -154,59 +231,61 @@ class KUKAPoseVisualizer(QMainWindow):
         if current_selection != -1 and current_selection < self.pose_list.count():
             self.pose_list.setCurrentRow(current_selection)
         self.visualize_poses()
-        
-    def visualize_poses(self):
+
+    def visualize_poses(self, add_extent_bounds=False, update_zoom=True):
         self.plotter.clear()
+
+        chained_poses, resulting_pose = chain_poses(self.poses)
+        # Update the resulting pose display
         
-        chained_poses = chain_poses(self.poses)
+        # Extract and print pose parameters
+        x, y, z, a, b, c = extract_pose_parameters(resulting_pose)
+        resulting_pose_string = f"{{X {x:.2f}, Y {y:.2f}, Z {z:.2f}, A {a:.2f}, B {b:.2f}, C {c:.2f}}}"
+        self.result_label.setText(f"Resulting Pose: {resulting_pose_string}")
+        self.result_label.setToolTip(f"Click to copy: {resulting_pose_string}")
         
         # Calculate scene size and frame scale
-        scene_size = calculate_scene_size(chained_poses)
-        frame_scale = scene_size * 0.1
+        if update_zoom:
+            scene_size = calculate_scene_size(chained_poses)
+            frame_scale = scene_size * 0.1
+            self.last_scene_size = scene_size
+
+        if self.last_scene_size is not None:
+            frame_scale = self.last_scene_size * 0.1
 
         # Calculate and add extents
         min_point, max_point = calculate_extents(chained_poses)
         extents = pv.Box(bounds=(min_point[0] - 500, max_point[0] + 500,
                                  min_point[1] - 500, max_point[1] + 500,
                                  min_point[2] - 500, max_point[2] + 500))
-        self.plotter.add_mesh(extents, style='wireframe', color='gray', line_width=1, opacity=0.5)
+        if add_extent_bounds:
+            self.plotter.add_mesh(extents, style='wireframe', color='gray', line_width=1, opacity=0.5)
 
         for i, (T, invert) in enumerate(chained_poses):
             # Create coordinate frame
             frame = create_coordinate_frame(scale=frame_scale)
             frame.transform(T)
-            
+
             # Add coordinate frame to the plot
             self.plotter.add_mesh(pv.Line(T[:3, 3], T[:3, 3] + T[:3, 0] * frame_scale), color='red', line_width=3)
             self.plotter.add_mesh(pv.Line(T[:3, 3], T[:3, 3] + T[:3, 1] * frame_scale), color='green', line_width=3)
             self.plotter.add_mesh(pv.Line(T[:3, 3], T[:3, 3] + T[:3, 2] * frame_scale), color='blue', line_width=3)
-            
+
             # Add text label
             label_color = 'purple' if invert else 'black'
-            self.plotter.add_point_labels(T[:3, 3].reshape(1, -1), [f'Pose {i+1}{"*" if invert else ""}'], 
+            self.plotter.add_point_labels(T[:3, 3].reshape(1, -1), [f'Pose {i+1}{"*" if invert else ""}'],
                                           point_size=0, shape_opacity=0, font_size=30, text_color=label_color)
-            
+
             # Connect poses with lines
             if i > 0:
                 prev_T = chained_poses[i-1][0]
                 line = pv.Line(prev_T[:3, 3], T[:3, 3])
-                self.plotter.add_mesh(line, color='white', line_width=2)
-
-        # Calculate and display the resulting pose
-        if chained_poses:
-            final_transformation = chained_poses[-1][0]
-            x, y, z, a, b, c = extract_pose_parameters(final_transformation)
-            result_str = f"Resulting Pose: {{X {x:.2f}, Y {y:.2f}, Z {z:.2f}, A {a:.2f}, B {b:.2f}, C {c:.2f}}}"
-            self.result_label.setText(result_str)
-            print(result_str)  # Debug print
-        else:
-            self.result_label.setText("Resulting Pose: No poses to visualize")
-        
-        # Set up the camera
-        camera_position, focal_point = calculate_camera_position(min_point, max_point)
-        self.plotter.camera_position = [tuple(camera_position), tuple(focal_point), (0, 0, 1)]
-        self.plotter.reset_camera()
-        self.plotter.show_axes()
+                self.plotter.add_mesh(line, color='black', line_width=1)
+            
+            # Extract and print pose parameters
+            x, y, z, a, b, c = extract_pose_parameters(T)
+            invert_text = " (Inverted)" if invert else ""
+            print(f"Pose {i+1}{invert_text}: {{X {x:.2f}, Y {y:.2f}, Z {z:.2f}, A {a:.2f}, B {b:.2f}, C {c:.2f}}}")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

@@ -9,6 +9,7 @@ def parse_pose_string(pose_str):
     if match:
         return tuple(map(float, match.groups()))
     else:
+        print("Invalid pose string format")
         raise ValueError("Invalid pose string format")
 
 
@@ -76,7 +77,7 @@ def chain_poses(poses):
         current_T = current_T @ T
         chained_poses.append((current_T.copy(), invert))
     
-    return chained_poses
+    return chained_poses, current_T
 
 def calculate_extents(chained_poses):
     """Calculate the extents of all poses."""
